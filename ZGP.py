@@ -117,7 +117,6 @@ def type_out(text, code=WHITE, delay=0.008, end="\n"):
 
 
 def loading_bar(label, seconds=0.55, width=10, code=GREEN):
-    """Short, even, single-line progress bar that disappears when done."""
     if not ANIM:
         return
     steps = width
@@ -317,7 +316,6 @@ def sep(color=CYAN):
 
 
 def show_banner():
-    """Centered neon Zero Ghost Team banner (mobile-safe width)."""
     art = [
         (" ███████╗███████╗██████╗  ██████╗ ", GREEN),
         (" ╚══███╔╝██╔════╝██╔══██╗██╔═══██╗", CYAN),
@@ -368,33 +366,196 @@ def startup():
 
 
 # ==============================================================================
-# 8. MULTI-LINE INPUT  (3 empty ENTERs = finish)
+# 8. MULTI-LINE INPUT + EDITOR
 # ==============================================================================
 
-def read_multiline():
-    lines = []
+def _collect_lines(start_line, initial_lines):
+    """Collect lines with 3 empty ENTERs to finish. No '>' prompt."""
+    lines = list(initial_lines)
+    line_no = start_line
     blank_run = 0
     while True:
         try:
-            line = input(paint("> ", CYAN))
+            line = input(paint("  %2d  " % line_no, GREEN))
         except (EOFError, KeyboardInterrupt):
             raise
         if line == "":
             blank_run += 1
             if blank_run >= 3:
-                break
+                return lines
             lines.append("")
         else:
             blank_run = 0
             lines.append(line)
-    while lines and lines[-1] == "":
-        lines.pop()
-    return "\n".join(lines)
+        line_no += 1
+
+
+def _show_lines(lines):
+    print()
+    print(paint("  --- YOUR LINES ---", CYAN))
+    if not lines:
+        print(paint("  (empty)", DIM))
+    else:
+        for i, l in enumerate(lines, 1):
+            print(paint("  %2d  %s" % (i, l), WHITE))
+    print()
+
+
+def _edit_menu(lines):
+    """
+    Interactive line editor.
+
+    Editing line N replaces ONLY line N. All other lines stay intact.
+    Returns the final list of lines, or None if the user quit.
+    """
+    lines = list(lines)
+    while True:
+        _show_lines(lines)
+        print(paint("  :N=edit N   :D N=delete N   :A=append   :0=done   :Q=quit", DIM))
+        try:
+            cmd = input(paint("  > ", YELLOW)).strip()
+        except (EOFError, KeyboardInterrupt):
+            raise
+
+        if cmd in ("", "0", ":0"):
+            while lines and lines[-1] == "":
+                lines.pop()
+            return lines
+
+        if cmd in (":Q", ":q"):
+            return None
+
+        if cmd in (":A", ":a"):
+            lines = _collect_lines(len(lines) + 1, lines)
+            continue
+
+        if cmd.startswith(":D ") or cmd.startswith(":d "):
+            try:
+                n = int(cmd[3:].strip())
+                if 1 <= n <= len(lines):
+                    del lines[n - 1]
+                else:
+                    print(paint("  [!] Line %d not found." % n, RED))
+            except ValueError:
+                print(paint("  [!] Invalid line number.", RED))
+            continue
+
+        num_str = cmd[1:] if cmd.startswith(":") else cmd
+        if num_str.isdigit():
+            n = int(num_str)
+            if 1 <= n <= len(lines):
+                try:
+                    new = input(paint("  new %d: " % n, CYAN))
+                except (EOFError, KeyboardInterrupt):
+                    raise
+                lines[n - 1] = new
+                print(paint("  [+] Line %d updated (others unchanged)." % n, GREEN))
+                time.sleep(0.35)
+            else:
+                print(paint("  [!] Line %d not found." % n, RED))
+        else:
+            print(paint("  [!] Unknown command: %s" % cmd, RED))
 
 
 # ==============================================================================
-# 9. CLIPBOARD  (Termux / iSH / Linux / macOS / Windows / OSC-52)
+# 9. CLIPBOARD  READ + WRITE
 # ==============================================================================
+
+def _read_termux_clipboard():
+    is_termux = bool(
+        os.environ.get("TERMUX_VERSION")
+        or "com.termux" in os.environ.get("PREFIX", "")
+    )
+    if not is_termux:
+        return None
+    if not shutil.which("termux-clipboard-get"):
+        return None
+    try:
+        r = subprocess.run(["termux-clipboard-get"], capture_output=True, timeout=5)
+        if r.returncode == 0:
+            return r.stdout.decode("utf-8", errors="replace")
+    except Exception:
+        pass
+    return None
+
+
+def _read_pbpaste():
+    if not shutil.which("pbpaste"):
+        return None
+    try:
+        r = subprocess.run(["pbpaste"], capture_output=True, timeout=5)
+        if r.returncode == 0:
+            return r.stdout.decode("utf-8", errors="replace")
+    except Exception:
+        pass
+    return None
+
+
+def _read_linux_clipboard():
+    for cmd in (
+        ["wl-paste", "--no-newline"],
+        ["xclip", "-selection", "clipboard", "-o"],
+        ["xsel", "--clipboard", "--output"],
+    ):
+        if not shutil.which(cmd[0]):
+            continue
+        try:
+            r = subprocess.run(cmd, capture_output=True, timeout=5)
+            if r.returncode == 0:
+                return r.stdout.decode("utf-8", errors="replace")
+        except Exception:
+            continue
+    return None
+
+
+def _read_windows_clip():
+    if os.name != "nt":
+        return None
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", "Get-Clipboard"],
+            capture_output=True, timeout=5,
+        )
+        if r.returncode == 0:
+            return r.stdout.decode("utf-8", errors="replace").rstrip("\r\n")
+    except Exception:
+        pass
+    return None
+
+
+def _read_tkinter():
+    try:
+        import tkinter
+        root = tkinter.Tk()
+        root.withdraw()
+        try:
+            t = root.clipboard_get()
+        except Exception:
+            t = None
+        root.destroy()
+        return t
+    except Exception:
+        return None
+
+
+def read_clipboard():
+    t = _read_termux_clipboard()
+    if t is not None:
+        return t
+    t = _read_pbpaste()
+    if t is not None:
+        return t
+    t = _read_linux_clipboard()
+    if t is not None:
+        return t
+    t = _read_windows_clip()
+    if t is not None:
+        return t
+    t = _read_tkinter()
+    if t is not None:
+        return t
+    return None
+
 
 def _try_termux_clipboard(text):
     is_termux = bool(
@@ -423,11 +584,8 @@ def _try_pbcopy(text):
         return False
     try:
         proc = subprocess.run(
-            ["pbcopy"],
-            input=text.encode("utf-8"),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=5,
+            ["pbcopy"], input=text.encode("utf-8"),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
         )
         return proc.returncode == 0
     except Exception:
@@ -436,21 +594,17 @@ def _try_pbcopy(text):
 
 def _try_linux_clipboard(text):
     payload = text.encode("utf-8")
-    candidates = [
+    for cmd in (
         ["wl-copy"],
         ["xclip", "-selection", "clipboard"],
         ["xsel", "--clipboard", "--input"],
-    ]
-    for cmd in candidates:
+    ):
         if not shutil.which(cmd[0]):
             continue
         try:
             proc = subprocess.run(
-                cmd,
-                input=payload,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
+                cmd, input=payload,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
             )
             if proc.returncode == 0:
                 return True
@@ -464,18 +618,15 @@ def _try_windows_clip(text):
         return False
     try:
         proc = subprocess.run(
-            ["clip"],
-            input=text.encode("utf-16-le"),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=5,
+            ["clip"], input=text.encode("utf-16-le"),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
         )
         return proc.returncode == 0
     except Exception:
         return False
 
 
-def _try_tkinter(text):
+def _try_tkinter_set(text):
     try:
         import tkinter
         root = tkinter.Tk()
@@ -509,7 +660,7 @@ def copy_to_clipboard(text):
         return "wl-copy/xclip/xsel"
     if _try_windows_clip(text):
         return "clip.exe"
-    if _try_tkinter(text):
+    if _try_tkinter_set(text):
         return "tkinter"
     if _try_osc52(text):
         return "OSC-52"
@@ -517,89 +668,161 @@ def copy_to_clipboard(text):
 
 
 # ==============================================================================
-# 10. FILE HELPERS
+# 10. PASTE PROMPT + CONFIRM
 # ==============================================================================
 
-def save_to_file(text):
-    default = "zero_ghost_output.txt"
-    try:
-        name = input(paint("  FILENAME [%s] > " % default, YELLOW)).strip()
-    except (EOFError, KeyboardInterrupt):
-        raise
-    if not name:
-        name = default
-    try:
-        with open(name, "w", encoding="utf-8") as fh:
-            fh.write(text + "\n")
-    except OSError as exc:
-        print(paint("  [!] Could not save: %s" % exc, RED))
-        return
-    print(paint("  [+] Saved: %s" % os.path.abspath(name), GREEN))
-
-
-# ==============================================================================
-# 11. RESULT ACTIONS  (COPY -> back to main menu automatically)
-# ==============================================================================
-
-def result_actions(text):
+def ask_paste():
+    print()
+    sep(CYAN)
+    print(paint("     PASTE YOUR COPIED CLIPBOARD?", YELLOW))
+    print()
+    print(paint("     [1] YES", GREEN))
+    print(paint("     [2] NO", RED))
+    sep(CYAN)
+    print()
     while True:
-        print()
-        sep(CYAN)
-        print(paint("     [1] SAVE    [2] COPY    [0] MENU", YELLOW))
-        sep(CYAN)
-        print()
         try:
             choice = input(paint("  > ", YELLOW)).strip()
         except (EOFError, KeyboardInterrupt):
             raise
-
         if choice == "1":
-            save_to_file(text)
-            # stay so user can still copy afterwards
-        elif choice == "2":
-            method = copy_to_clipboard(text)
-            print()
-            if method:
-                print(paint("  [+] Copied to clipboard (%s)." % method, GREEN))
-                print(paint("      Returning to main menu...", DIM))
-            else:
-                print(paint("  [!] No clipboard backend available.", RED))
-                print(paint("      Returning to main menu...", DIM))
-            time.sleep(1.3)
-            return                                  # -> back to MAIN MENU
-        elif choice in ("0", ""):
-            return
-        else:
-            print(paint("  [!] Choose 1, 2 or 0.", RED))
+            return True
+        if choice in ("2", ""):
+            return False
+        print(paint("  [!] Choose 1 or 2.", RED))
+
+
+def show_pasted_and_confirm(text):
+    """Show the pasted text and ask [1] Confirm / [2] Edit."""
+    print()
+    sep(CYAN)
+    print(paint("     PASTED FROM CLIPBOARD", CYAN))
+    sep(CYAN)
+    print()
+    lines = text.split("\n")
+    for l in lines:
+        print(paint("  " + l, WHITE))
+    print()
+    print(paint("  (%d lines, %d chars)" % (len(lines), len(text)), DIM))
+    print()
+    sep(CYAN)
+    print(paint("     [1] Confirm and process", GREEN))
+    print(paint("     [2] Edit the text", YELLOW))
+    sep(CYAN)
+    print()
+    while True:
+        try:
+            choice = input(paint("  > ", YELLOW)).strip()
+        except (EOFError, KeyboardInterrupt):
+            raise
+        if choice == "1":
+            return "confirm"
+        if choice == "2":
+            return "edit"
+        print(paint("  [!] Choose 1 or 2.", RED))
 
 
 # ==============================================================================
-# 12. ENCRYPT / DECRYPT SCREENS
+# 11. MODE HEADER / INPUT SECTION RENDERERS
 # ==============================================================================
 
-def encrypt_flow():
+def render_mode_header(mode_label):
     clear()
     sep(CYAN)
     show_banner()
     sep(CYAN)
     print()
-    print(paint("     ENCRYPT THE MESSAGE HERE", GREEN))
+    color = GREEN if mode_label == "Encrypt" else CYAN
+    print(paint("     %s THE MESSAGE HERE" % mode_label.upper(), color))
+    sep(color)
+    print()
+
+
+def render_input_section(mode_label):
+    print(paint("Note : Skip 3 Lines for Enter", YELLOW))
+    sep(CYAN)
+    print()
+    print(paint("     Write/Paste Your Message to %s" % mode_label, CYAN))
+    sep(CYAN)
+    print()
+
+
+# ==============================================================================
+# 12. MESSAGE ACQUISITION FLOW
+# ==============================================================================
+
+def get_message(mode_label):
+    """
+    Full acquisition flow.
+
+    Returns:
+      * str  -> the final message text
+      * ""   -> empty (nothing entered)
+      * None -> user cancelled (:Q)
+    """
+    if ask_paste():
+        content = read_clipboard()
+        if content:
+            content = content.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
+            action = show_pasted_and_confirm(content)
+            if action == "confirm":
+                return content
+            # Edit mode: clear UI, show pasted lines in editor
+            render_mode_header(mode_label)
+            print(paint("     EDIT YOUR MESSAGE", CYAN))
+            sep(CYAN)
+            lines = _edit_menu(content.split("\n"))
+            if lines is None:
+                return None
+            return "\n".join(lines)
+        else:
+            print(paint("  [!] Clipboard empty or unavailable.", RED))
+            print(paint("      Falling back to manual input.", DIM))
+            time.sleep(1.0)
+
+    # Manual input
+    render_input_section(mode_label)
+    lines = _collect_lines(1, [])
+    lines = _edit_menu(lines)
+    if lines is None:
+        return None
+    return "\n".join(lines)
+
+
+# ==============================================================================
+# 13. RESULT — single option: ENTER to copy, then back to menu
+# ==============================================================================
+
+def result_and_return(text):
+    print()
+    sep(GREEN)
+    print(paint("     Press ENTER to COPY and return to MENU", YELLOW))
     sep(GREEN)
     print()
-    print(paint("Note : Skip 3 Lines for Enter", YELLOW))
-    print()
-    sep(CYAN)
-    print()
-    print(paint("     Write/Paste Your Message to Encrypt", CYAN))
-    print ()
-    sep(CYAN)
-    print()
-
     try:
-        message = read_multiline()
+        input()
     except (EOFError, KeyboardInterrupt):
-        raise
+        pass
 
+    method = copy_to_clipboard(text)
+    print()
+    if method:
+        print(paint("  [+] Copied to clipboard (%s)." % method, GREEN))
+    else:
+        print(paint("  [!] Clipboard unavailable on this terminal.", RED))
+    time.sleep(1.2)
+
+
+# ==============================================================================
+# 14. ENCRYPT / DECRYPT FLOWS
+# ==============================================================================
+
+def encrypt_flow():
+    render_mode_header("Encrypt")
+
+    message = get_message("Encrypt")
+    if message is None:
+        return
     if message == "":
         print()
         print(paint("  [!] Empty message.", RED))
@@ -619,32 +842,15 @@ def encrypt_flow():
     print()
     reveal(result, GREEN)
 
-    result_actions(result)
+    result_and_return(result)
 
 
 def decrypt_flow():
-    clear()
-    sep(CYAN)
-    show_banner()
-    sep(CYAN)
-    print()
-    print(paint("     DECRYPT THE MESSAGE HERE", CYAN))
-    sep(CYAN)
-    print()
-    print(paint("Note : Skip 3 Lines for Enter", YELLOW))
-    print()
-    sep(CYAN)
-    print()
-    print(paint("     Write/Paste Your Message to Decrypt", CYAN))
-    print()
-    sep(CYAN)
-    print()
+    render_mode_header("Decrypt")
 
-    try:
-        message = read_multiline()
-    except (EOFError, KeyboardInterrupt):
-        raise
-
+    message = get_message("Decrypt")
+    if message is None:
+        return
     if message == "":
         print()
         print(paint("  [!] Empty message.", RED))
@@ -664,11 +870,11 @@ def decrypt_flow():
     print()
     reveal(result, CYAN)
 
-    result_actions(result)
+    result_and_return(result)
 
 
 # ==============================================================================
-# 13. MAIN MENU
+# 15. MAIN MENU
 # ==============================================================================
 
 def main_menu():
@@ -720,7 +926,7 @@ def shutdown():
 
 
 # ==============================================================================
-# 14. SELF-TEST MODE
+# 16. SELF-TEST MODE
 # ==============================================================================
 
 def run_selftest():
@@ -755,7 +961,8 @@ def run_selftest():
         print("   enc: %r" % e)
         print("   dec: %r" % d)
     print("-" * 48)
-    print(" Clipboard: %s" % (copy_to_clipboard("zero ghost ping") or "NONE"))
+    print(" Clipboard read : %s" % ("OK" if read_clipboard() is not None else "NONE"))
+    print(" Clipboard write: %s" % (copy_to_clipboard("zero ghost ping") or "NONE"))
     print("-" * 48)
     print(" RESULT: %s" % ("ALL PASSED" if ok and not problems else "FAILURES"))
     print("=" * 48)
@@ -763,7 +970,7 @@ def run_selftest():
 
 
 # ==============================================================================
-# 15. ENTRY POINT
+# 17. ENTRY POINT
 # ==============================================================================
 
 def main():
